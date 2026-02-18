@@ -12,6 +12,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3e600118900d37b4899fc74a57d24567, type: 3}
   m_Name: GridDataSO
   m_EditorClassIdentifier: Assembly-CSharp::GridDataSO
-  width: 8
-  height: 8
+  width: 24
+  height: 24
   tileOffset: 10

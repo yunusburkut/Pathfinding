@@ -553,7 +553,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 87d0176b34d27fd4b8ce9dda736e949d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GridManager
-  gridView: {fileID: 2509821666108971395, guid: 95e4713330791414cb983c28d81a3b80, type: 3}
+  tilePrefab: {fileID: 2509821666108971395, guid: 95e4713330791414cb983c28d81a3b80, type: 3}
   gridParent: {fileID: 222071542}
   gridData: {fileID: 11400000, guid: 23f3c2816d52da3418d3a8a1f01ead1e, type: 2}
 --- !u!224 &1629485201
@@ -588,7 +588,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::InputController
   gridManager: {fileID: 1629485200}
-  uiCamera: {fileID: 519420031}
+  canvas: {fileID: 222071545}
 --- !u!114 &1629485203
 MonoBehaviour:
   m_ObjectHideFlags: 0
