@@ -25,41 +25,20 @@ public class GridManager : MonoBehaviour
     private float _startY;
 
     private TileView[] _grid;
-
     private CellType[] _cells;
-
+    private ClickStage _stage = ClickStage.PickGreen;
+    
     public int Width => _width;
     public int Height => _height;
-
     public Vector2Int? StartCell { get; private set; } 
     public Vector2Int? EndCell { get; private set; } 
-
-    public bool IsBlocked(int x, int y)
-    {
-        if (!IsInBounds(x, y)) return true;
-        return _cells[Idx(x, y)] == CellType.Block;
-    }
-
-    private enum ClickStage { PickGreen, PickRed }
-    private ClickStage _stage = ClickStage.PickGreen;
-
-    private void Awake()
-    {
-        ValidateReferences();
-    }
-
+    
     private void Start()
     {
         InitializeFromData();
         BuildGrid();
     }
 
-    private void ValidateReferences()
-    {
-        if (tilePrefab == null) Debug.LogError($"{nameof(GridManager)}: Tile prefab is not assigned.", this);
-        if (gridParent == null) Debug.LogError($"{nameof(GridManager)}: Grid parent is not assigned.", this);
-        if (gridData == null) Debug.LogError($"{nameof(GridManager)}: Grid data is not assigned.", this);
-    }
 
     private void InitializeFromData()
     {
@@ -133,40 +112,6 @@ public class GridManager : MonoBehaviour
         _startY = totalH * 0.5f - _side * 0.5f;
     }
 
-    private int Idx(int x, int y) => y * _width + x;
-
-    private bool IsInBounds(int x, int y) => x >= 0 && x < _width && y >= 0 && y < _height;
-
-    public bool TryGetTile(int x, int y, out TileView tile)
-    {
-        tile = null;
-
-        if (_grid == null || _grid.Length == 0) return false;
-        if (!IsInBounds(x, y)) return false;
-
-        tile = _grid[Idx(x, y)];
-        return tile != null;
-    }
-
-    public void OnGridClicked(Vector2 screenPosition, Camera uiCamera)
-    {
-        if (!TryGetCellFromScreenPoint(screenPosition, uiCamera, out int x, out int y))
-            return;
-
-        if (CellClicked == null)
-            ApplyStartEndSelection(x, y);
-
-        CellClicked?.Invoke(x, y);
-    }
-
-    public void OnBlockClicked(Vector2 screenPosition, Camera uiCamera)
-    {
-        if (!TryGetCellFromScreenPoint(screenPosition, uiCamera, out int x, out int y))
-            return;
-
-        ToggleBlock(x, y);
-    }
-
     private void ApplyStartEndSelection(int x, int y)
     {
         if (IsBlocked(x, y))
@@ -219,7 +164,7 @@ public class GridManager : MonoBehaviour
         }
     }
 
-    public bool TryGetCellFromScreenPoint(Vector2 screenPosition, Camera uiCamera, out int x, out int y)
+    private bool TryGetCellFromScreenPoint(Vector2 screenPosition, Camera uiCamera, out int x, out int y)
     {
         x = -1;
         y = -1;
@@ -254,5 +199,40 @@ public class GridManager : MonoBehaviour
         x = ix;
         y = iy;
         return true;
+    }
+    
+    private int Idx(int x, int y) => y * _width + x;
+    private bool IsInBounds(int x, int y) => x >= 0 && x < _width && y >= 0 && y < _height;
+    public bool IsBlocked(int x, int y)
+    {
+        if (!IsInBounds(x, y)) return true;
+        return _cells[Idx(x, y)] == CellType.Block;
+    }
+    public bool TryGetTile(int x, int y, out TileView tile)
+    {
+        tile = null;
+
+        if (_grid == null || _grid.Length == 0) return false;
+        if (!IsInBounds(x, y)) return false;
+
+        tile = _grid[Idx(x, y)];
+        return tile != null;
+    }
+    public void OnGridClicked(Vector2 screenPosition, Camera uiCamera)
+    {
+        if (!TryGetCellFromScreenPoint(screenPosition, uiCamera, out int x, out int y))
+            return;
+
+        if (CellClicked == null)
+            ApplyStartEndSelection(x, y);
+
+        CellClicked?.Invoke(x, y);
+    }
+    public void OnBlockClicked(Vector2 screenPosition, Camera uiCamera)
+    {
+        if (!TryGetCellFromScreenPoint(screenPosition, uiCamera, out int x, out int y))
+            return;
+
+        ToggleBlock(x, y);
     }
 }
