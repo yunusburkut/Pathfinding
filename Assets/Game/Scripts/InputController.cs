@@ -1,21 +1,29 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-public class InputController : MonoBehaviour
+public class InputController : MonoBehaviour, IPointerClickHandler
 {
-    
     [SerializeField] private GridManager gridManager;
-    [SerializeField] private Button changeColorButton;
-    [SerializeField] private Vector2 gridLoc;
-    
-    void Start()
+    [SerializeField] private Canvas canvas;
+
+    public void OnPointerClick(PointerEventData eventData)
     {
-        changeColorButton.onClick.AddListener(ChangeColor);
+        if (gridManager == null) return;
+
+        Camera uiCamera = GetUiCamera();
+
+        if (eventData.button == PointerEventData.InputButton.Left)
+            gridManager.OnGridClicked(eventData.position, uiCamera);
+
+        if (eventData.button == PointerEventData.InputButton.Right)
+            gridManager.OnBlockClicked(eventData.position, uiCamera);
     }
 
-    private void ChangeColor()
+    private Camera GetUiCamera()
     {
-        TileView tv = gridManager.GetTile((int)gridLoc.x, (int)gridLoc.y);
-        tv.SetColor(Color.red);
+        if (canvas == null) return null;
+        if (canvas.renderMode == RenderMode.ScreenSpaceOverlay) return null;
+        return canvas.worldCamera;
     }
 }

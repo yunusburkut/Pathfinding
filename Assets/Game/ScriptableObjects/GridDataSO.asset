@@ -14,4 +14,4 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::GridDataSO
   width: 8
   height: 8
-  tileOffset: 0.25
+  tileOffset: 10
