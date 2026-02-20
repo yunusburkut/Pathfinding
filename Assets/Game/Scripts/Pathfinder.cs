@@ -222,6 +222,7 @@ public class Pathfinder : MonoBehaviour
                 }
 
                 // Wait to make it easier to follow step-by-step.
+                //
                 if (stepWait != null)
                     yield return stepWait;
             }
