@@ -1,63 +1,84 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 public class Pathfinder : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private GridManager grid;
 
-    [Header("BFS Visual Settings")]
-    [Tooltip("How long should we wait each time a new cell is tried while BFS is running? (0 = no wait)")]
-    [SerializeField] private float bfsStepDelaySeconds = 0.03f;
+    [Header("Visualization Settings")]
+    [Tooltip("How long should we wait each time a new cell is tried while algorithm is running? (0 = no wait)")]
+    [SerializeField] private float stepDelaySeconds = 0.03f;
 
-    [Tooltip("Color of the 'tried/visited' cells during BFS")]
+    [Tooltip("Color of the 'tried/visited' cells during search")]
     [SerializeField] private Color searchedCellColor = Color.yellow;
 
     [Tooltip("Color of the shortest path drawn when the target is found")]
     [SerializeField] private Color finalPathColor = Color.green;
 
+    
+    [Header("Block Density")]
+    [SerializeField] private Button generateBlocksButton;
+    [SerializeField] private Slider blockDensitySlider;
+    
+    [Header("Algo Buttons")]
+    [SerializeField] private Button bfsButton;
+    [SerializeField] private Button aStarButton;
+
     private Coroutine findPathCoroutine;
 
     // --------------------------------------------------------------------
-    // PERF: Reusable buffers (to reduce GC allocations)
+    // Reusable buffers (performance / GC friendly)
     // --------------------------------------------------------------------
-    // We traverse the grid using a 1D index instead of 2D (x,y): index = y * width + x
+    // We address the grid as a single 1D array:
+    //   index = y * width + x
     //
-    // visitedMarkByIndex:
-    //  - Stores whether each cell was visited "in this run".
-    //  - Instead of a classic bool[] visited, we use the "stamp/mark" technique:
-    //      currentVisitMark increments each run,
-    //      if visitedMarkByIndex[i] == currentVisitMark, it was visited in this run.
-    //  - This way we don't have to clear the whole array with Array.Clear every time.
-    private int[] visitedMarkByIndex;      // length = width*height
+    // visitedMarkByIndex uses a "stamp" technique:
+    // - currentVisitMark increments each run
+    // - visitedMarkByIndex[i] == currentVisitMark means "visited in this run"
+    // This avoids clearing a bool[] every time.
+    private int[] visitedMarkByIndex;
 
-    // parentIndexByIndex:
-    //  - Stores the "parent" so we can reconstruct the path after BFS reaches the target.
-    //  - parentIndexByIndex[child] = parentIndex
-    //  - The start cell's parent is -1.
-    private int[] parentIndexByIndex;      // length = width*height
+    // parentIndexByIndex stores the predecessor for each node so we can rebuild
+    // the final shortest path after the search finishes.
+    private int[] parentIndexByIndex;
 
-    // bfsQueue:
-    //  - We use an int[] for the BFS queue (to avoid List/Queue allocations).
-    //  - Works with head/tail pointers.
-    private int[] bfsQueue;                // length = width*height
+    // Used as:
+    // - BFS queue during BFS
+    // - Path buffer during path reconstruction (end -> start)
+    private int[] queueOrPathBuffer;
 
     private int currentVisitMark;
 
-    // coloredIndicesThisRun:
-    //  - Stores indices of cells whose color we changed in this run.
-    //  - Before the next run, we reset only these cells (we don't scan the whole grid).
+    // Tracks which cells we painted, so we can reset only those next run (O(k) not O(n)).
     private readonly List<int> coloredIndicesThisRun = new List<int>(256);
 
-    // WaitForSeconds cache:
-    //  - Continuously doing "new WaitForSeconds(x)" inside a coroutine creates unnecessary allocations.
-    //  - We cache a single object for the same delay value and reuse it.
+    // WaitForSeconds caching prevents allocations inside coroutines.
     private WaitForSeconds cachedStepWait;
     private float cachedStepWaitSeconds = -1f;
 
-    // Four directions (right, left, up, down). No diagonals.
+    // --------------------------------------------------------------------
+    // A* state (priority queue + scores)
+    // --------------------------------------------------------------------
+    // gScore: best-known cost from start to this node
+    // fScore: heap priority = g + h (Manhattan heuristic)
+    private int[] gScoreByIndex;
+    private int[] fScoreByIndex;
+
+    // Min-heap (priority queue) for the "open set".
+    // We store node indices in the heap and compare them by fScoreByIndex.
+    private int[] openHeap;
+    private int[] openHeapPosByIndex; // nodeIndex -> heap position, -1 if not in heap
+    private int openHeapSize;
+
+    // Used by heap tie-breaks without querying GridManager repeatedly.
+    private int heapGridWidth;
+    private int heapEndX;
+    private int heapEndY;
+
+    // 4-neighborhood movement (no diagonals).
     private static readonly Vector2Int[] FourDirections =
     {
         new Vector2Int(1, 0),
@@ -66,113 +87,94 @@ public class Pathfinder : MonoBehaviour
         new Vector2Int(0, -1),
     };
 
-    private void Update()
+    private void Start()
     {
-        // Press Space to start/stop BFS (toggle).
-        if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
-            TogglePathfinding();
+        bfsButton.onClick.AddListener(RunBfs);
+        aStarButton.onClick.AddListener(RunAStar);
+        generateBlocksButton.onClick.AddListener(GenerateBlocks);
     }
 
-    private void TogglePathfinding()
+    
+    private void GenerateBlocks()
     {
-        // If it's already running: stop.
+        grid.RandomizeBlocksEnsuringPath(blockDensitySlider.value, maxAttempts: 200);
+    }
+    
+    private void OnDestroy()
+    {
+        // Always unhook listeners to avoid leaks / double subscriptions in domain reload scenarios.
+        bfsButton.onClick.RemoveListener(RunBfs);  
+        aStarButton.onClick.RemoveListener(RunAStar);
+        generateBlocksButton.onClick.RemoveListener(GenerateBlocks);
+    }
+
+    public void RunBfs()
+    {
+        StopCurrentPathfindingIfAny();
+        findPathCoroutine = StartCoroutine(FindPathWithBfsRoutine(stepDelaySeconds));
+    }
+
+    public void RunAStar()
+    {
+        StopCurrentPathfindingIfAny();
+        findPathCoroutine = StartCoroutine(FindPathWithAStarRoutine(stepDelaySeconds));
+    }
+
+    private void StopCurrentPathfindingIfAny()
+    {
+        // Only one search coroutine should be active at a time.
         if (findPathCoroutine != null)
         {
             StopCoroutine(findPathCoroutine);
             findPathCoroutine = null;
-            return;
         }
-
-        // Otherwise: start.
-        findPathCoroutine = StartCoroutine(FindPathWithBfsRoutine(bfsStepDelaySeconds));
     }
 
     private void OnDisable()
     {
-        // Don't leave the coroutine running when the object gets disabled.
-        if (findPathCoroutine != null)
-        {
-            StopCoroutine(findPathCoroutine);
-            findPathCoroutine = null;
-        }
+        // Safety: stop running coroutine when the object becomes inactive.
+        StopCurrentPathfindingIfAny();
     }
 
     private IEnumerator FindPathWithBfsRoutine(float stepDelay)
     {
-        // Safety checks: do we have references and a valid start/end selection?
-        if (grid == null) yield break;
-        if (!grid.StartCell.HasValue || !grid.EndCell.HasValue) yield break;
-
-        int gridWidth = grid.Width;
-        int gridHeight = grid.Height;
-        int gridSize = gridWidth * gridHeight;
+        // Validate references + start/end selection + bounds + blocked state.
+        if (!TryPrepareRun(out int gridWidth, out int gridHeight, out int gridSize,
+                out Vector2Int startCell, out Vector2Int endCell,
+                out int startIndex, out int endIndex))
+            yield break;
 
         EnsureReusableBuffers(gridSize);
 
-        Vector2Int startCell = grid.StartCell.Value;
-        Vector2Int endCell = grid.EndCell.Value;
-
-        // Are Start/End within bounds?
-        if ((uint)startCell.x >= (uint)gridWidth || (uint)startCell.y >= (uint)gridHeight) yield break;
-        if ((uint)endCell.x >= (uint)gridWidth || (uint)endCell.y >= (uint)gridHeight) yield break;
-
-        // If Start/End are blocked, searching for a path is meaningless.
-        if (grid.IsBlocked(startCell.x, startCell.y) || grid.IsBlocked(endCell.x, endCell.y)) yield break;
-
-        int startIndex = ToIndex(startCell.x, startCell.y, gridWidth);
-        int endIndex = ToIndex(endCell.x, endCell.y, gridWidth);
-
-        // Clear paints from the previous run (instead of scanning the whole grid, we only reset what we touched).
+        // Only reset cells we previously colored (fast for large grids).
         ResetPreviouslyColoredCells(startCell, endCell);
 
-        // ------------------------------------------------------------
-        // Clearing visited using the "stamp" technique:
-        //  - When we do currentVisitMark++, we create a new "label" for this run.
-        //  - visitedMarkByIndex[i] == currentVisitMark => visited in this run.
-        //  - To avoid int.MaxValue overflow, we occasionally do a full clear.
-        // ------------------------------------------------------------
+        // New "visit stamp" for this run.
         currentVisitMark++;
         if (currentVisitMark == int.MaxValue)
         {
+            // Rare overflow guard: reset array and restart stamps.
             System.Array.Clear(visitedMarkByIndex, 0, visitedMarkByIndex.Length);
             currentVisitMark = 1;
         }
 
-        // The start cell has no parent.
         parentIndexByIndex[startIndex] = -1;
 
-        // Initialize the BFS queue.
+        // BFS queue implemented on top of an int[] with head/tail pointers.
         int queueHead = 0;
         int queueTail = 0;
 
-        bfsQueue[queueTail++] = startIndex;
+        queueOrPathBuffer[queueTail++] = startIndex;
         visitedMarkByIndex[startIndex] = currentVisitMark;
+
+        WaitForSeconds stepWait = GetStepWait(stepDelay);
 
         bool pathFound = false;
 
-        // If there is a step delay, cache WaitForSeconds.
-        WaitForSeconds stepWait = null;
-        if (stepDelay > 0f)
-        {
-            if (cachedStepWaitSeconds != stepDelay)
-            {
-                cachedStepWaitSeconds = stepDelay;
-                cachedStepWait = new WaitForSeconds(stepDelay);
-            }
-            stepWait = cachedStepWait;
-        }
-
-        // ------------------------------------------------------------
-        // BFS:
-        //  - Dequeue a cell
-        //  - Visit its 4 neighbors
-        //  - Enqueue a neighbor the first time we see it
-        //  - Stop when we reach endIndex
-        // BFS guarantee: in an unweighted grid, the first path found is the "shortest" path.
-        // ------------------------------------------------------------
+        // BFS guarantees shortest path on an unweighted grid.
         while (queueHead < queueTail && !pathFound)
         {
-            int currentIndex = bfsQueue[queueHead++];
+            int currentIndex = queueOrPathBuffer[queueHead++];
 
             int currentX = currentIndex % gridWidth;
             int currentY = currentIndex / gridWidth;
@@ -182,79 +184,183 @@ public class Pathfinder : MonoBehaviour
                 int neighborX = currentX + FourDirections[dir].x;
                 int neighborY = currentY + FourDirections[dir].y;
 
-                // If out of bounds, skip.
                 if ((uint)neighborX >= (uint)gridWidth || (uint)neighborY >= (uint)gridHeight)
                     continue;
 
-                // If it's a wall/blocked cell, skip.
                 if (grid.IsBlocked(neighborX, neighborY))
                     continue;
 
                 int neighborIndex = ToIndex(neighborX, neighborY, gridWidth);
 
-                // If we already visited it in this run, don't enqueue again.
                 if (visitedMarkByIndex[neighborIndex] == currentVisitMark)
                     continue;
 
-                // Visit and store parent info (critical for reconstructing the path).
                 visitedMarkByIndex[neighborIndex] = currentVisitMark;
                 parentIndexByIndex[neighborIndex] = currentIndex;
 
-                // Did we reach the target?
                 if (neighborIndex == endIndex)
                 {
                     pathFound = true;
                     break;
                 }
 
-                // Enqueue.
-                bfsQueue[queueTail++] = neighborIndex;
+                queueOrPathBuffer[queueTail++] = neighborIndex;
 
-                // Visualization: paint tried cells (except start) yellow.
-                // (We already did bounds checks, so TryGetTile won't go out of range.)
-                if (neighborIndex != startIndex)
+                // Visualize explored cells (skip start cell so it stays green).
+                if (neighborIndex != startIndex && grid.TryGetTile(neighborX, neighborY, out var tile))
                 {
-                    if (grid.TryGetTile(neighborX, neighborY, out var tile))
-                    {
-                        tile.SetColor(searchedCellColor);
-                        coloredIndicesThisRun.Add(neighborIndex);
-                    }
+                    tile.SetColor(searchedCellColor);
+                    coloredIndicesThisRun.Add(neighborIndex);
                 }
 
-                // Wait to make it easier to follow step-by-step.
-                //
                 if (stepWait != null)
                     yield return stepWait;
             }
         }
 
-        // If we couldn't reach the target, exit.
         if (!pathFound)
             yield break;
 
-        // ------------------------------------------------------------
-        // RECONSTRUCT PATH (end -> start):
-        //  - Walk backwards from end to start using parentIndexByIndex.
-        //  - To avoid allocating a new List, we reuse the bfsQueue array as a "path buffer" this time.
-        // ------------------------------------------------------------
+        // Paint final path from start -> end.
+        yield return ReconstructAndPaintPathRoutine(gridWidth, startCell, endCell, startIndex, endIndex);
+    }
+
+    private IEnumerator FindPathWithAStarRoutine(float stepDelay)
+    {
+        // A* uses a heuristic (Manhattan distance) to guide the search.
+        // With 4-direction movement and uniform costs, Manhattan is admissible and consistent.
+        if (!TryPrepareRun(out int gridWidth, out int gridHeight, out int gridSize,
+                out Vector2Int startCell, out Vector2Int endCell,
+                out int startIndex, out int endIndex))
+            yield break;
+
+        EnsureReusableBuffers(gridSize);
+        ResetPreviouslyColoredCells(startCell, endCell);
+
+        currentVisitMark++;
+        if (currentVisitMark == int.MaxValue)
+        {
+            System.Array.Clear(visitedMarkByIndex, 0, visitedMarkByIndex.Length);
+            currentVisitMark = 1;
+        }
+
+        heapGridWidth = gridWidth;
+        heapEndX = endCell.x;
+        heapEndY = endCell.y;
+
+        for (int i = 0; i < gridSize; i++)
+        {
+            gScoreByIndex[i] = int.MaxValue;
+            fScoreByIndex[i] = int.MaxValue;
+            openHeapPosByIndex[i] = -1;
+            parentIndexByIndex[i] = -1;
+        }
+
+        openHeapSize = 0;
+
+        gScoreByIndex[startIndex] = 0;
+        fScoreByIndex[startIndex] = Manhattan(startCell.x, startCell.y, endCell.x, endCell.y);
+        HeapPush(startIndex);
+
+        WaitForSeconds stepWait = GetStepWait(stepDelay);
+
+        bool pathFound = false;
+
+        while (openHeapSize > 0)
+        {
+            int currentIndex = HeapPopMin();
+
+            if (visitedMarkByIndex[currentIndex] == currentVisitMark)
+                continue;
+
+            visitedMarkByIndex[currentIndex] = currentVisitMark;
+
+            if (currentIndex == endIndex)
+            {
+                pathFound = true;
+                break;
+            }
+
+            int cx = currentIndex % gridWidth;
+            int cy = currentIndex / gridWidth;
+
+            if (currentIndex != startIndex && grid.TryGetTile(cx, cy, out var curTile))
+            {
+                curTile.SetColor(searchedCellColor);
+                coloredIndicesThisRun.Add(currentIndex);
+            }
+
+            int currentG = gScoreByIndex[currentIndex];
+            if (currentG == int.MaxValue)
+                continue;
+
+            for (int dir = 0; dir < 4; dir++)
+            {
+                int nx = cx + FourDirections[dir].x;
+                int ny = cy + FourDirections[dir].y;
+
+                if ((uint)nx >= (uint)gridWidth || (uint)ny >= (uint)gridHeight)
+                    continue;
+
+                if (grid.IsBlocked(nx, ny))
+                    continue;
+
+                int neighborIndex = ToIndex(nx, ny, gridWidth);
+
+                if (visitedMarkByIndex[neighborIndex] == currentVisitMark)
+                    continue;
+
+                // For weighted grids, replace "+ 1" with "+ moveCost".
+                int tentativeG = currentG + 1;
+
+                if (tentativeG < gScoreByIndex[neighborIndex])
+                {
+                    parentIndexByIndex[neighborIndex] = currentIndex;
+                    gScoreByIndex[neighborIndex] = tentativeG;
+
+                    int h = Manhattan(nx, ny, endCell.x, endCell.y);
+                    fScoreByIndex[neighborIndex] = tentativeG + h;
+
+                    if (openHeapPosByIndex[neighborIndex] < 0)
+                        HeapPush(neighborIndex);
+                    else
+                        HeapDecreaseKey(neighborIndex);
+                }
+            }
+
+            if (stepWait != null)
+                yield return stepWait;
+        }
+
+        if (!pathFound)
+            yield break;
+
+        yield return ReconstructAndPaintPathRoutine(gridWidth, startCell, endCell, startIndex, endIndex);
+    }
+
+    private IEnumerator ReconstructAndPaintPathRoutine(int gridWidth, Vector2Int startCell, Vector2Int endCell, int startIndex, int endIndex)
+    {
+        // Rebuild path backwards using parent links:
+        // end -> ... -> start
+        // We reuse queueOrPathBuffer to avoid allocating a List.
         int pathLength = 0;
         int walkerIndex = endIndex;
 
         while (walkerIndex != startIndex)
         {
-            bfsQueue[pathLength++] = walkerIndex;
+            queueOrPathBuffer[pathLength++] = walkerIndex;
 
             int parent = parentIndexByIndex[walkerIndex];
-            if (parent < 0) yield break; // should not happen in theory; safety.
+            if (parent < 0) yield break; // Safety: no path chain.
             walkerIndex = parent;
         }
 
-        bfsQueue[pathLength++] = startIndex;
+        queueOrPathBuffer[pathLength++] = startIndex;
 
-        // Walk in reverse order to paint the path as start -> end.
+        // Paint in reverse so it becomes start -> end.
         for (int i = pathLength - 1; i >= 0; i--)
         {
-            int indexOnPath = bfsQueue[i];
+            int indexOnPath = queueOrPathBuffer[i];
             int x = indexOnPath % gridWidth;
             int y = indexOnPath / gridWidth;
 
@@ -264,40 +370,97 @@ public class Pathfinder : MonoBehaviour
                 coloredIndicesThisRun.Add(indexOnPath);
             }
 
-            // Drawing the path "frame by frame" usually looks nicer.
+            // Drawing one cell per frame reads nicely in the UI.
             yield return null;
         }
 
-        // Optionally re-apply endpoint colors for safety (UI might have repainted them).
+        // Re-apply endpoint colors to keep them stable.
         if (grid.TryGetTile(startCell.x, startCell.y, out var startTile)) startTile.SetColor(Color.green);
         if (grid.TryGetTile(endCell.x, endCell.y, out var endTile)) endTile.SetColor(Color.red);
     }
 
+    private bool TryPrepareRun(out int gridWidth, out int gridHeight, out int gridSize,
+        out Vector2Int startCell, out Vector2Int endCell,
+        out int startIndex, out int endIndex)
+    {
+        // Centralized validation so BFS/A* stay small and consistent.
+        gridWidth = 0;
+        gridHeight = 0;
+        gridSize = 0;
+        startCell = default;
+        endCell = default;
+        startIndex = -1;
+        endIndex = -1;
+
+        if (grid == null) return false;
+        if (!grid.StartCell.HasValue || !grid.EndCell.HasValue) return false;
+
+        gridWidth = grid.Width;
+        gridHeight = grid.Height;
+
+        if (gridWidth <= 0 || gridHeight <= 0) return false;
+
+        gridSize = gridWidth * gridHeight;
+
+        startCell = grid.StartCell.Value;
+        endCell = grid.EndCell.Value;
+
+        // Unsigned bounds checks are branch-friendly and safe.
+        if ((uint)startCell.x >= (uint)gridWidth || (uint)startCell.y >= (uint)gridHeight) return false;
+        if ((uint)endCell.x >= (uint)gridWidth || (uint)endCell.y >= (uint)gridHeight) return false;
+
+        if (grid.IsBlocked(startCell.x, startCell.y) || grid.IsBlocked(endCell.x, endCell.y)) return false;
+
+        startIndex = ToIndex(startCell.x, startCell.y, gridWidth);
+        endIndex = ToIndex(endCell.x, endCell.y, gridWidth);
+
+        return true;
+    }
+
+    private WaitForSeconds GetStepWait(float stepDelay)
+    {
+        // Cache WaitForSeconds to avoid allocations in tight loops.
+        if (stepDelay <= 0f) return null;
+
+        if (cachedStepWaitSeconds != stepDelay)
+        {
+            cachedStepWaitSeconds = stepDelay;
+            cachedStepWait = new WaitForSeconds(stepDelay);
+        }
+
+        return cachedStepWait;
+    }
+
     private void EnsureReusableBuffers(int gridSize)
     {
-        // If the grid size changed, recreate the buffers.
+        // Allocate all buffers once and reuse; recreate only if grid size changes.
         if (visitedMarkByIndex == null || visitedMarkByIndex.Length != gridSize)
         {
             visitedMarkByIndex = new int[gridSize];
             parentIndexByIndex = new int[gridSize];
-            bfsQueue = new int[gridSize];
+            queueOrPathBuffer = new int[gridSize];
             currentVisitMark = 0;
+
+            gScoreByIndex = new int[gridSize];
+            fScoreByIndex = new int[gridSize];
+            openHeap = new int[gridSize];
+            openHeapPosByIndex = new int[gridSize];
+            openHeapSize = 0;
         }
     }
 
     private void ResetPreviouslyColoredCells(Vector2Int startCell, Vector2Int endCell)
     {
+        // Reset only touched tiles for better performance on larger grids.
         int gridWidth = grid.Width;
 
-        // Reset only what we painted before -> O(k) (k = number of colored cells)
-        // Resetting the entire grid would be O(n).
         for (int i = 0; i < coloredIndicesThisRun.Count; i++)
         {
             int idx = coloredIndicesThisRun[i];
             int x = idx % gridWidth;
             int y = idx / gridWidth;
 
-            // We don't reset Start/End cells; their colors should stay fixed.
+            // Keep start/end colors stable.
             if (x == startCell.x && y == startCell.y) continue;
             if (x == endCell.x && y == endCell.y) continue;
 
@@ -307,11 +470,121 @@ public class Pathfinder : MonoBehaviour
 
         coloredIndicesThisRun.Clear();
 
-        // Re-apply endpoint colors (guarantee).
         if (grid.TryGetTile(startCell.x, startCell.y, out var startTile)) startTile.SetColor(Color.green);
         if (grid.TryGetTile(endCell.x, endCell.y, out var endTile)) endTile.SetColor(Color.red);
     }
 
-    // Converts 2D coordinates to a 1D index (row-major).
+    // -------------------------
+    // Min-Heap (Open Set)
+    // -------------------------
+    // This heap is a lightweight priority queue implementation specialized for this grid:
+    // - nodes are int indices
+    // - priority is fScoreByIndex[index]
+    // - we keep openHeapPosByIndex so we can do DecreaseKey in O(log n)
+    private void HeapPush(int nodeIndex)
+    {
+        int pos = openHeapSize;
+        openHeap[openHeapSize++] = nodeIndex;
+        openHeapPosByIndex[nodeIndex] = pos;
+        HeapSiftUp(pos);
+    }
+
+    private int HeapPopMin()
+    {
+        // Removes and returns the node with smallest fScore (tie-broken by heuristic closeness).
+        int min = openHeap[0];
+        openHeapPosByIndex[min] = -1;
+
+        openHeapSize--;
+        if (openHeapSize > 0)
+        {
+            int last = openHeap[openHeapSize];
+            openHeap[0] = last;
+            openHeapPosByIndex[last] = 0;
+            HeapSiftDown(0);
+        }
+
+        return min;
+    }
+
+    private void HeapDecreaseKey(int nodeIndex)
+    {
+        // The node's fScore got smaller; bubble it up.
+        int pos = openHeapPosByIndex[nodeIndex];
+        if (pos >= 0)
+            HeapSiftUp(pos);
+    }
+
+    private void HeapSiftUp(int pos)
+    {
+        while (pos > 0)
+        {
+            int parent = (pos - 1) >> 1;
+            if (HeapIsLessOrEqual(openHeap[parent], openHeap[pos]))
+                break;
+
+            HeapSwap(parent, pos);
+            pos = parent;
+        }
+    }
+
+    private void HeapSiftDown(int pos)
+    {
+        while (true)
+        {
+            int left = (pos << 1) + 1;
+            if (left >= openHeapSize) break;
+
+            int right = left + 1;
+            int smallest = left;
+
+            if (right < openHeapSize && HeapIsLess(openHeap[right], openHeap[left]))
+                smallest = right;
+
+            if (HeapIsLessOrEqual(openHeap[pos], openHeap[smallest]))
+                break;
+
+            HeapSwap(pos, smallest);
+            pos = smallest;
+        }
+    }
+
+    private bool HeapIsLess(int aIndex, int bIndex)
+    {
+        // Primary key: smaller fScore first.
+        int fa = fScoreByIndex[aIndex];
+        int fb = fScoreByIndex[bIndex];
+        if (fa != fb) return fa < fb;
+
+        // Tie-break: prefer nodes closer to the goal (helps A* produce cleaner fronts).
+        int ax = aIndex % heapGridWidth;
+        int ay = aIndex / heapGridWidth;
+        int bx = bIndex % heapGridWidth;
+        int by = bIndex / heapGridWidth;
+
+        int ha = Manhattan(ax, ay, heapEndX, heapEndY);
+        int hb = Manhattan(bx, by, heapEndX, heapEndY);
+
+        return ha < hb;
+    }
+
+    private bool HeapIsLessOrEqual(int aIndex, int bIndex)
+        => aIndex == bIndex || !HeapIsLess(bIndex, aIndex);
+
+    private void HeapSwap(int posA, int posB)
+    {
+        int a = openHeap[posA];
+        int b = openHeap[posB];
+
+        openHeap[posA] = b;
+        openHeap[posB] = a;
+
+        openHeapPosByIndex[a] = posB;
+        openHeapPosByIndex[b] = posA;
+    }
+
+    private static int Manhattan(int x0, int y0, int x1, int y1)
+        => Mathf.Abs(x0 - x1) + Mathf.Abs(y0 - y1);
+
     private static int ToIndex(int x, int y, int gridWidth) => y * gridWidth + x;
 }
