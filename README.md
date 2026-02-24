@@ -1,13 +1,45 @@
-**Path Finding Visualization**
-Visualization of path finding algorithms such as BFS and A* Algorithm.
+# Path Finding Visualization
 
-Visualization of BFS
-![BFSGIF](https://github.com/user-attachments/assets/fe4c48db-8219-4cf8-bddc-d2b903a5f6ce)
+A Unity-based visualization project for pathfinding algorithms such as **BFS** and **A\***.  
+The goal of this project is to visually demonstrate how different pathfinding algorithms explore nodes and build the final path.
 
-Visualization of A* Algorithm
-![aStar](https://github.com/user-attachments/assets/354f579b-5f14-4b24-9c04-ba58113dbbd4)
+---
 
-**TODOs**
--Dijkstra and Weighted pathfinding
--Mice maze concept like find fastest path not the shortest path. calculate top speed and turns etc.
--Code readability optimization
+## Features
+
+- **BFS (Breadth-First Search) Visualization**
+- **A\* (A-Star) Algorithm Visualization**
+- Step-by-step node exploration display
+- Final path rendering
+
+---
+
+## Visualizations
+
+### BFS Visualization
+![BFS GIF](https://github.com/user-attachments/assets/fe4c48db-8219-4cf8-bddc-d2b903a5f6ce)
+
+### A* Algorithm Visualization
+![A Star GIF](https://github.com/user-attachments/assets/354f579b-5f14-4b24-9c04-ba58113dbbd4)
+
+---
+
+## TODO
+
+- [ ] Dijkstra visualization
+- [ ] Weighted pathfinding support
+- [ ] "Mouse maze" concept:
+  - Find the **fastest** path instead of the shortest path
+  - Consider speed, acceleration, and turn cost
+- [ ] Improve code readability and overall project structure
+
+---
+
+## Purpose
+
+This project is built to:
+
+- Learn pathfinding algorithms deeply
+- Compare algorithm behaviors visually
+- Improve algorithm and data structure skills in a practical way
+- Build a clean and extensible pathfinding foundation for future game projects
